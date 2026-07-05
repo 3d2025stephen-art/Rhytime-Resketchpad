@@ -2,7 +2,7 @@
 A new tool to sketch your music in the web browser.
 
 
-Rhytime — Resketchpad v0.1 user guide:           
+Rhytime — Resketchpad v0.1          
 
 
 
