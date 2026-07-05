@@ -1,9 +1,99 @@
 # Rhytime-Resketchpad
 A new music tool to sketch your music in our web browser.
 
- Rhytime — Resketchpad v0.1 license
+
+Rhytime — Resketchpad v0.1 user guide:           
 
 
+
+
+
+current Resketchpad workflow user-guide:
+
+
+Start
+
+New song: begin a clean blank project.
+Load JSON: reopen a full Resketchpad project.
+Import MIDI: bring in one MIDI source and edit it inside Resketchpad.
+Browser memory restores the last work automatically.
+Reload latest work: recover the previous project after New song or Clear memory.
+
+Composing
+
+Add notes with + note <, + note >, or + distant note.
+Add silence/spacing with + Polyrest.
+Notes stay magnetic by default, so the melody feels glued together.
+Rests live inside/after notes as optional mute/spacing accents.
+Polyrests create visible phrase room between note series.
+
+Editing
+
+resize latch: default note-length editing.
+shift line: move phrase/line spacing using polyrests.
+shift freq: edit pitch and build harmony selections.
+pace spline: resize-like editing plus movement-curve reading.
+analog feel gives free timing.
+1/32 steps gives quantized timing.
+
+Readings
+
+Note tiles show pitch with black/white key labels.
+Family roles mark musical meaning:open: normal note
+parent: state/identity note
+child: force/helper note
+ruler: rhythmic/physics note
+
+Double-click a note outside Pace mode to cycle family.
+Pace mode shows parent/pivot motion as a wave spline.
+Integer list checks playable/sample-aligned timing.
+Singer mode shows scale-degree reading.
+
+
+Hearing
+
+Play previews the current piece in-browser.
+Built-in synth has editable presets and reverb.
+Synth settings save inside the song JSON.
+Test sound checks the current sound quickly.
+Tempo can use native, custom, or MIDI source tempo.
+Harmony
+In shift freq, click notes into the harmony palette.
+Use Tonic arrange, Chord seedbag, or Tessitura tool to explore harmonic options.
+Next synth cycles selected notes through suggested results.
+Save Safely
+Undo / Redo cover edits.
+Browser autosave keeps the current project locally.
+Save JSON is the rich portable project file.
+Export MIDI sends notes to MIDI/DAW tools.
+Clear memory clears current browser autosave but keeps latest work recoverable.
+
+
+
+ *Development Note*
+
+    Resketchpad was designed and directed by the author. During
+    development, AI-assisted coding tools were used to help prototype
+    features, generate implementation suggestions, review code, and
+    accelerate development. All design decisions, feature selection,
+    testing, and final integration were performed under the author's
+    direction.
+
+Based on writing music on paper in another kind.
+
+
+The MIDI support is important because it makes the tool interoperable,
+but the real value is that it forced the formalized note/rest
+model. 
+That foundation will make future features—like in Rhytime
+notation, movement library, and pattern zones—much easier to build
+because they're all describing the same underlying musical structure
+rather than separate systems.
+
+
+
+
+ - Rhytime — Resketchpad v0.1 license
 
 *No public free or commercial redistribution of our UI.
 
@@ -16,7 +106,6 @@ A new music tool to sketch your music in our web browser.
     complete corresponding source code to redistribute.
  Public releases require prior
     written permission from the copyright holder.
-
 
 
 *The goal of this project is to help the learning, experimentation,
