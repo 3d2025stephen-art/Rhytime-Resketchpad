@@ -1,5 +1,5 @@
 # Rhytime-Resketchpad
-A new music tool to sketch your music in our web browser.
+A new tool to sketch your music in our web browser.
 
 
 Rhytime — Resketchpad v0.1 user guide:           
