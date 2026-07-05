@@ -294,6 +294,7 @@ const tempoBPMInp = el('tempoBPM');
 const nativeTempoBPMInp = el('nativeTempoBPM');
 const tempoModeSel = el('tempoMode');
 let midiSourceTempoBPM = null;
+let projectOrigin = 'manual';
 function barsCount(){
   let v = parseInt(barsCountInp?.value || '1', 10);
   if(isNaN(v)) v = 1;
@@ -328,6 +329,18 @@ const tlVoiceCount = el('tlVoiceCount');
 const fitVoicesBtn = el('fitVoices');
 let timelineAutoFitVoices = localStorage.getItem('tl_auto_fit_voices') === '1';
 const MAX_LINES = 10;
+function setTimelineAutoFitVoices(enabled){
+  timelineAutoFitVoices = !!enabled;
+  localStorage.setItem('tl_auto_fit_voices', enabled ? '1' : '0');
+}
+function scrollTimelineToStart(resetVertical=false){
+  requestAnimationFrame(()=>{
+    const viz = document.querySelector('.viz');
+    if(!viz) return;
+    viz.scrollLeft = 0;
+    if(resetVertical) viz.scrollTop = 0;
+  });
+}
 function setTLHeight(px){
   const clamped = Math.max(140, Math.min(1800, Math.round(px)));
   document.documentElement.style.setProperty('--tl-h', clamped+'px');
@@ -347,16 +360,16 @@ function voiceCountValue(){
 function syncVoiceCount(){
   if(tlVoiceCount) tlVoiceCount.value = String(Math.max(1, Math.min(MAX_LINES, maxLine())));
 }
-function fitTimelineToVoices(count=voiceCountValue()){
-  timelineAutoFitVoices = true;
-  localStorage.setItem('tl_auto_fit_voices', '1');
+function fitTimelineToVoices(count=voiceCountValue(), announce=true){
+  count = Math.max(1, Math.min(MAX_LINES, parseInt(count, 10) || maxLine()));
+  setTimelineAutoFitVoices(true);
   const zY = timelineVZoom();
   const lineH = Math.max(16, 42*zY);
   const top = Math.max(28, 58*zY);
   const h = top + count * lineH + Math.max(42, 34*zY);
   setTLHeight(h);
   if(tlVoiceCount) tlVoiceCount.value = String(count);
-  toast(`Timeline fit ${count} voice${count>1?'s':''}`);
+  if(announce) toast(`Timeline fit ${count} voice${count>1?'s':''}`);
 }
 function autoFitTimelineFocus(){
   if(!timelineAutoFitVoices) return;
@@ -421,13 +434,52 @@ function setTimelineZoomMode(mode){
 function toggleTimelineZoomMode(){
   setTimelineZoomMode(timelineZoomMode()==='beats' ? 'bars' : 'beats');
 }
-function timelineViewAll(){
+function timelineViewAll(announce=true){
   setTimelineZoom(0.5);
-  requestAnimationFrame(()=>{
-    const viz = document.querySelector('.viz');
-    if(viz) viz.scrollLeft = 0;
-  });
-  toast(`View all ${timelineZoomMode()}`);
+  scrollTimelineToStart(false);
+  if(announce) toast(`View all ${timelineZoomMode()}`);
+}
+function projectTimelineState(){
+  const rawHeight = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--tl-h') || localStorage.getItem('tl_h_px') || '0', 10);
+  return {
+    zoomMode: timelineZoomMode(),
+    zoom: timelineZoom(),
+    vZoom: timelineVZoom(),
+    heightPx: Number.isFinite(rawHeight) ? rawHeight : null,
+    voiceCount: voiceCountValue(),
+    autoFitVoices: timelineAutoFitVoices
+  };
+}
+function applyProjectTimelineState(state){
+  if(!state || typeof state !== 'object') return false;
+  if(Number.isFinite(Number(state.vZoom))) setTimelineVZoom(Number(state.vZoom));
+  const count = Math.max(1, Math.min(MAX_LINES, parseInt(state.voiceCount, 10) || maxLine()));
+  if(state.autoFitVoices){
+    fitTimelineToVoices(count, false);
+  } else if(Number.isFinite(Number(state.heightPx))){
+    setTimelineAutoFitVoices(false);
+    setTLHeight(Number(state.heightPx));
+    if(tlVoiceCount) tlVoiceCount.value = String(count);
+  } else if(tlVoiceCount){
+    tlVoiceCount.value = String(count);
+  }
+  if(tlZoomMode){
+    tlZoomMode.value = state.zoomMode === 'beats' ? 'beats' : 'bars';
+    localStorage.setItem('tl_zoom_mode', tlZoomMode.value);
+  }
+  if(Number.isFinite(Number(state.zoom))) setTimelineZoom(Number(state.zoom));
+  else updateTimelineZoomInfo();
+  return true;
+}
+function safeFitTimelineToSong(announce=false){
+  fitTimelineToVoices(Math.min(MAX_LINES, Math.max(1, maxLine())), false);
+  if(tlZoomMode){
+    tlZoomMode.value = 'bars';
+    localStorage.setItem('tl_zoom_mode', 'bars');
+  }
+  timelineViewAll(false);
+  scrollTimelineToStart(true);
+  if(announce) toast('Timeline fit to song');
 }
 function loadTimelineZoom(){
   if(tlZoomMode) tlZoomMode.value = localStorage.getItem('tl_zoom_mode') === 'beats' ? 'beats' : 'bars';
@@ -461,8 +513,7 @@ function installResizer(){
   let startY=0, startH=0, active=false;
   function onMove(e){
     if(!active) return;
-    timelineAutoFitVoices = false;
-    localStorage.setItem('tl_auto_fit_voices', '0');
+    setTimelineAutoFitVoices(false);
     const dy = (e.touches? e.touches[0].clientY : e.clientY) - startY;
     setTLHeight(startH + dy);
   }
@@ -486,7 +537,7 @@ function installResizer(){
     startY = e.touches[0].clientY; startH = viz.getBoundingClientRect().height;
     window.addEventListener('touchmove', onMove, {passive:false}); window.addEventListener('touchend', onUp);
   }, {passive:true});
-  res.addEventListener('dblclick', ()=> { console.log('resizer dblclick'); timelineAutoFitVoices = false; localStorage.setItem('tl_auto_fit_voices', '0'); setTLHeight(320); });
+  res.addEventListener('dblclick', ()=> { console.log('resizer dblclick'); setTimelineAutoFitVoices(false); setTLHeight(320); });
 }
 function installVerticalWheelZoom(){
   const viz = document.querySelector('.viz');
@@ -949,7 +1000,9 @@ function captureState(){
     groupApplyMode: groupApplyMode?.value || 'paint',
     editFeel: el('editFeel')?.value || 'analog',
     shiftMode: shiftModeSel?.value || 'resize',
-    magnetic: magneticOn()
+    magnetic: magneticOn(),
+    projectOrigin,
+    timelineState: projectTimelineState()
   });
 }
 function restoreState(raw){
@@ -974,6 +1027,7 @@ function restoreState(raw){
   if(groupApplyMode) groupApplyMode.value = s.groupApplyMode || 'paint';
   if(el('editFeel')) el('editFeel').value = s.editFeel || 'analog';
   if(shiftModeSel) shiftModeSel.value = s.shiftMode || 'resize';
+  projectOrigin = s.projectOrigin === 'midi' ? 'midi' : 'manual';
   if(harmTargetRoleSel && harmTargetRoleSel.value === 'root') harmTargetRoleSel.value = 'chord';
   const mag = el('magneticMelody'); if(mag) mag.checked = s.magnetic !== false;
   renderGroups();
@@ -981,6 +1035,11 @@ function restoreState(raw){
   renderCurrentGroup();
   renderNotes();
   update();
+  const restoredTimeline = applyProjectTimelineState(s.timelineState);
+  if(projectOrigin === 'midi'){
+    if(!restoredTimeline) safeFitTimelineToSong(false);
+    else scrollTimelineToStart(true);
+  }
   updateHistoryButtons();
 }
 function updateHistoryButtons(){
@@ -3604,7 +3663,7 @@ const PROJECT_LATEST_KEY = 'resketchpad_project_latest_work_v1';
 let autosaveTimer = null;
 let autosaveReady = false;
 function projectSnapshot(){
-  return {version:"rhytime-rsp-0.1", beatsPerBar:parseInt(beatsPerBarSel.value,10), bars:barsCount(), base:baseSel.value, tempoMode:tempoModeSel?.value || 'native', tempoBPM:customTempoBPM(), nativeTempoBPM:nativeTempoBPM(), midiSourceTempoBPM, groups, notes, lineOffsets, paceRef, pacePivotIds, synthPatch:synthCodeSnapshot()};
+  return {version:"rhytime-rsp-0.1", beatsPerBar:parseInt(beatsPerBarSel.value,10), bars:barsCount(), base:baseSel.value, tempoMode:tempoModeSel?.value || 'native', tempoBPM:customTempoBPM(), nativeTempoBPM:nativeTempoBPM(), midiSourceTempoBPM, projectOrigin, timelineState:projectTimelineState(), groups, notes, lineOffsets, paceRef, pacePivotIds, synthPatch:synthCodeSnapshot()};
 }
 function toJSON(){
   return JSON.stringify(projectSnapshot(), null, 2);
@@ -3670,6 +3729,7 @@ function resetProjectState(){
   if(tempoBPMInp) tempoBPMInp.value = '60';
   if(nativeTempoBPMInp) nativeTempoBPMInp.value = '60';
   midiSourceTempoBPM = null;
+  projectOrigin = 'manual';
   groups = JSON.parse(JSON.stringify(GROUP_DEFAULTS));
   notes = [];
   lineOffsets = {};
@@ -3709,6 +3769,7 @@ function fromJSON(obj){
   if(nativeTempoBPMInp) nativeTempoBPMInp.value = String(nativeBpm);
   if(tempoModeSel) tempoModeSel.value = ['native','custom','source'].includes(obj.tempoMode) ? obj.tempoMode : 'native';
   if(tempoBPMInp) tempoBPMInp.value = String(Math.max(20, Math.min(320, Number(obj.tempoBPM)||nativeBpm||60)));
+  projectOrigin = obj.projectOrigin === 'midi' ? 'midi' : 'manual';
   groups = Array.isArray(obj.groups)? obj.groups : [];
   notes = Array.isArray(obj.notes)? obj.notes.map(n=>normalizeNote({...n})) : [];
   lineOffsets = obj.lineOffsets && typeof obj.lineOffsets==='object' ? {...obj.lineOffsets} : {};
@@ -3717,6 +3778,11 @@ function fromJSON(obj){
   if(obj.synthPatch && typeof obj.synthPatch === 'object') applySynthPatch(obj.synthPatch, '');
   nextId = notes.reduce((m,n)=>Math.max(m,n.id||0),0)+1;
   renderGroups(); renderNotes(); update();
+  const restoredTimeline = applyProjectTimelineState(obj.timelineState);
+  if(projectOrigin === 'midi'){
+    if(!restoredTimeline) safeFitTimelineToSong(false);
+    else scrollTimelineToStart(true);
+  }
 }
 function download(name, text){
   const blob = new Blob([text], {type:'application/octet-stream'});
@@ -3878,6 +3944,7 @@ function importMidiBuffer(buffer){
   lineOffsets = {};
   paceRef = null;
   pacePivotIds = [];
+  projectOrigin = 'midi';
   midiSourceTempoBPM = Math.max(20, Math.min(320, Math.round(60000000 / Math.max(1, parsed.tempo))));
   if(tempoModeSel) tempoModeSel.value = 'source';
   const maxBeat = imported.reduce((m,n)=>Math.max(m, n.start + durationBeats(n)), 0);
@@ -3889,6 +3956,7 @@ function importMidiBuffer(buffer){
   if(mag) mag.checked = false;
   showGeneratedRests = false;
   renderNotes(); update();
+  safeFitTimelineToSong(false);
   toast(`Imported ${imported.length} MIDI note${imported.length>1?'s':''}`);
 }
 function midiVarLen(value){
