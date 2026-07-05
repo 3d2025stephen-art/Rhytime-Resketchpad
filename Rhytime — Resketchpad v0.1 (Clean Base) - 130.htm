@@ -207,6 +207,7 @@
         </div>
 
         <div class="flex" style="margin-bottom:8px; flex-wrap:wrap">
+          <label class="pill"><input type="checkbox" id="freeEditMode" checked> Free edit</label>
           <label class="pill" style="display:none"><input type="checkbox" id="magneticMelody" checked> Magnetic melody</label>
           <span class="pill">Edit mode <select id="shiftMode"><option value="resize" selected>resize latch</option><option value="pace">pace spline</option><option value="line">shift line</option><option value="freq">shift freq</option></select></span>
           <span class="pill">Edit feel <select id="editFeel"><option value="analog" selected>analog</option><option value="frac32">1/32 steps</option></select></span>
@@ -922,7 +923,7 @@ function groupColor(code){
 }
 
 // notes
-let notes=[]; let selId=null; let nextId=1; let lineOffsets={}; let showAllNotes=false; let showAllIntegers=false; let paceRef=null; let pacePivotIds=[];
+let notes=[]; let selId=null; let nextId=1; let lineOffsets={}; let showAllNotes=false; let showAllIntegers=false; let paceRef=null; let pacePivotIds=[]; let ghostLineRef=null;
 let insertStance = {id:null, edge:'end'};
 let armedTool = null;
 const notesList = el('notesList'); const selInfo = el('selInfo'); const addNoteBeforeBtn = el('addNoteBefore'); const addNoteAfterBtn = el('addNoteAfter'); const addDistantNoteBtn = el('addDistantNote'); const addPolyrestBtn = el('addPolyrest'); const addStringAboveBtn = el('addStringAbove'); const addStringBelowBtn = el('addStringBelow'); const relativeIntervalSel = el('relativeInterval'); const dupNoteBtn = el('dupNote'); const delNoteBtn = el('delNote'); const solvePaceRefBtn = el('solvePaceRef'); const toggleNotesListBtn = el('toggleNotesList'); const toggleIntegerListBtn = el('toggleIntegerList'); const integerListInfo = el('integerListInfo');
@@ -944,6 +945,7 @@ function captureState(){
     lineOffsets: clonePlain(lineOffsets),
     paceRef: paceRef ? clonePlain(paceRef) : null,
     pacePivotIds: clonePlain(pacePivotIds),
+    ghostLineRef,
     selId,
     harmonyPaletteIds: clonePlain(harmonyPaletteIds),
     nextId,
@@ -951,6 +953,7 @@ function captureState(){
     currentGroup: currentGroup(),
     groupApplyMode: groupApplyMode?.value || 'paint',
     editFeel: el('editFeel')?.value || 'analog',
+    freeEditMode: el('freeEditMode')?.checked !== false,
     shiftMode: shiftModeSel?.value || 'resize',
     magnetic: magneticOn()
   });
@@ -970,13 +973,16 @@ function restoreState(raw){
   lineOffsets = s.lineOffsets && typeof s.lineOffsets === 'object' ? {...s.lineOffsets} : {};
   paceRef = s.paceRef && typeof s.paceRef === 'object' ? {...s.paceRef} : null;
   pacePivotIds = Array.isArray(s.pacePivotIds) ? s.pacePivotIds.filter(id=>Number.isFinite(Number(id))).map(Number).slice(0,10) : [];
+  ghostLineRef = Number.isFinite(Number(s.ghostLineRef)) ? Math.max(1, Math.min(MAX_LINES, parseInt(s.ghostLineRef,10) || 1)) : null;
   selId = s.selId ?? null;
   harmonyPaletteIds = Array.isArray(s.harmonyPaletteIds) ? s.harmonyPaletteIds : [];
   nextId = Number.isFinite(Number(s.nextId)) ? Number(s.nextId) : notes.reduce((m,n)=>Math.max(m,n.id||0),0)+1;
   insertStance = s.insertStance && typeof s.insertStance === 'object' ? {...s.insertStance} : {id:null, edge:'end'};
   if(groupApplyMode) groupApplyMode.value = s.groupApplyMode || 'paint';
   if(el('editFeel')) el('editFeel').value = s.editFeel || 'analog';
+  if(el('freeEditMode')) el('freeEditMode').checked = s.freeEditMode !== false;
   if(shiftModeSel) shiftModeSel.value = s.shiftMode || 'resize';
+  syncFreeEditMode();
   if(harmTargetRoleSel && harmTargetRoleSel.value === 'root') harmTargetRoleSel.value = 'chord';
   const mag = el('magneticMelody'); if(mag) mag.checked = s.magnetic !== false;
   renderGroups();
@@ -1024,15 +1030,36 @@ function redo(){
   restoreState(next);
   toast('Redo');
 }
-function magneticOn(){ const m=el('magneticMelody'); return !m || m.checked; }
+function magneticOn(){ const m=el('magneticMelody'); const f=el('freeEditMode'); return (!f || !f.checked) && (!m || m.checked); }
+function syncFreeEditMode(){
+  return !!el('freeEditMode')?.checked;
+}
 function defaultNote(start=0, den=2, dot=false, note="E", oct=4, cents=0, line=1){ return {id: nextId++, kind:'note', lbl:'', start, den, dot, note, oct, cents, locked:false, q:false, group:'', restAfter:0, muteRest:false, line, lenOverride:null, familyRole:'', spoiler:false}; }
-function defaultPolyrest(start=0, len=1/2, line=1){ const r = defaultNote(start, 2, false, "E", 4, 0, line); r.kind='polyrest'; r.lenOverride=len; r.lbl='poly'; r.restAfter=0; r.muteRest=false; r.familyRole=''; return r; }
+function vertexKeyForBeat(line, beat){ return `${Math.max(1, parseInt(line,10) || 1)}:${clampToBar(Number(beat)||0).toFixed(6)}`; }
+function syncPolyrestVertex(n){
+  if(!n || !isPolyrest(n)) return n;
+  const len = Math.max(1/64, durationBeats(n));
+  if(Number.isFinite(Number(n.vertexBeat))){
+    n.vertexBeat = clampToBar(Number(n.vertexBeat));
+    n.vertexWeight = Math.max(0, Math.min(1, (Number(n.vertexBeat) - Number(n.start || 0)) / len));
+  } else if(Number.isFinite(Number(n.vertexWeight))){
+    n.vertexWeight = Math.max(0, Math.min(1, Number(n.vertexWeight)));
+    n.vertexBeat = clampToBar(n.start + len * n.vertexWeight);
+  } else {
+    n.vertexWeight = 0.5;
+    n.vertexBeat = clampToBar(n.start + len * 0.5);
+  }
+  n.vertexId = n.vertexId || `polyrest:${n.id}`;
+  return n;
+}
+function defaultPolyrest(start=0, len=1/2, line=1){ const r = defaultNote(start, 2, false, "E", 4, 0, line); r.kind='polyrest'; r.lenOverride=len; r.vertexWeight = 0.5; syncPolyrestVertex(r); r.lbl='poly'; r.restAfter=0; r.muteRest=false; r.familyRole=''; return r; }
 function isPolyrest(n){ return n?.kind === 'polyrest'; }
 function makePolyrest(n, len=null){
   const keepLen = len ?? durationBeats(n);
   n.kind = 'polyrest';
   n.lbl = 'poly';
   n.lenOverride = keepLen;
+  syncPolyrestVertex(n);
   n.restAfter = 0;
   n.muteRest = false;
   n.familyRole = '';
@@ -1058,6 +1085,13 @@ function normalizeNote(n){
   n.lenOverride = Number.isFinite(Number(n.lenOverride)) && Number(n.lenOverride)>0 ? Number(n.lenOverride) : null;
   n.familyRole = ['parent','child','ruler'].includes(n.familyRole) ? n.familyRole : '';
   n.spoiler = !!n.spoiler;
+  if(n.kind === 'polyrest'){
+    syncPolyrestVertex(n);
+  } else if('vertexBeat' in n){
+    delete n.vertexBeat;
+    delete n.vertexId;
+    delete n.vertexWeight;
+  }
   return n;
 }
 function noteLine(n){ return Math.max(1, parseInt(n?.line,10) || 1); }
@@ -1065,6 +1099,11 @@ function maxLine(){ return notes.reduce((m,n)=>Math.max(m, noteLine(n)), 1); }
 function lineNotes(line){ return notes.filter(n=>noteLine(n)===line).sort((a,b)=>a.start-b.start || a.id-b.id); }
 function lineNeighborInfo(n){
   const line = lineNotes(noteLine(n));
+  const idx = line.findIndex(m=>m.id===n.id);
+  return {prev: idx>0 ? line[idx-1] : null, next: idx>=0 && idx<line.length-1 ? line[idx+1] : null};
+}
+function lineSolidNeighborInfo(n){
+  const line = lineNotes(noteLine(n)).filter(m=>!isPolyrest(m));
   const idx = line.findIndex(m=>m.id===n.id);
   return {prev: idx>0 ? line[idx-1] : null, next: idx>=0 && idx<line.length-1 ? line[idx+1] : null};
 }
@@ -1101,6 +1140,71 @@ function adoptCurrentGroup(n){
 function addNote(n){ normalizeNote(n); paintCurrentGroup(n); notes.push(n); selId=n.id; renderNotes(); update(); }
 function selectedNote(){ return selId==null ? null : notes.find(n=>n.id===selId) || null; }
 function selectedLine(){ return noteLine(selectedNote()) || 1; }
+function ghostLineModeOn(){ return ['resize','line'].includes(shiftModeSel?.value || 'resize'); }
+function ghostLine(){
+  if(!ghostLineModeOn()) return null;
+  if(Number.isFinite(Number(ghostLineRef))) return Math.max(1, Math.min(MAX_LINES, parseInt(ghostLineRef,10) || 1));
+  const line = selectedLine();
+  ghostLineRef = line;
+  return line;
+}
+function selectionSplineVertexData(){
+  const n = selectedNote();
+  if(!n) return null;
+  return {
+    note: n,
+    id: n.id,
+    line: noteLine(n),
+    startBeat: n.start,
+    endBeat: n.start + durationBeats(n),
+    vertexBeats: [n.start, n.start + durationBeats(n)],
+    startX: xOf(n.start),
+    endX: xOf(n.start + durationBeats(n)),
+    x: null
+  };
+}
+function dotAnchorsForLine(line){ return lineNotes(line).filter(n=>!isPolyrest(n) && !!n.dot); }
+function ghostVertexZonePx(){ return Math.max(14, Math.round(18 * timelineVZoom())); }
+function ghostHitRadiusPx(){ return Math.max(8, Math.round(10 * timelineVZoom())); }
+function polyrestVertexBeat(n){ return Number.isFinite(Number(n?.vertexBeat)) ? clampToBar(Number(n.vertexBeat)) : clampToBar((n?.start || 0) + durationBeats(n) / 2); }
+function polyrestVertexId(n){ return isPolyrest(n) ? (n?.vertexId || `polyrest:${n.id}`) : null; }
+function polyrestVertexEdgeHit(n){
+  if(!n || !isPolyrest(n)) return false;
+  const weight = Number.isFinite(Number(n.vertexWeight)) ? Number(n.vertexWeight) : ((polyrestVertexBeat(n) - Number(n.start || 0)) / Math.max(1/64, durationBeats(n)));
+  return weight <= 0.02 || weight >= 0.98;
+}
+function polyrestTouchSignal(sourceNote, rectWidth){
+  if(!sourceNote) return null;
+  const line = noteLine(sourceNote);
+  const sourceData = sourceNote && !isPolyrest(sourceNote) ? {
+    note: sourceNote,
+    line,
+    vertexBeats: [sourceNote.start, sourceNote.start + durationBeats(sourceNote)]
+  } : selectionSplineVertexData();
+  const beatPerPx = params().M / Math.max(1, rectWidth || 1);
+  const hitPx = ghostHitRadiusPx();
+  const rests = lineNotes(line).filter(isPolyrest);
+  if(!rests.length) return null;
+
+  for(const rest of rests){
+    if(!rest || !isPolyrest(rest)) continue;
+    const restCenter = polyrestVertexBeat(rest);
+    if(isPolyrest(sourceNote) && sourceNote.id === rest.id && polyrestVertexEdgeHit(rest)){
+      return {kind:'self-edge', source:rest, target:rest, sourceData, restCenter};
+    }
+    for(const beat of (sourceData?.vertexBeats || [])){
+      const distPx = Math.abs(beat - restCenter) / Math.max(1e-9, beatPerPx);
+      const splineLen = ghostSplineLengthBeats(beat, restCenter);
+      const weightedPx = distPx * Math.max(0.35, Math.min(1.25, splineLen / Math.max(1/64, durationBeats(rest)))) ;
+      if(weightedPx <= hitPx){
+        const sourceEdge = Math.abs(beat - sourceNote.start) < 1e-9 ? 'start' : 'end';
+        return {kind:'vertex-contact', source:sourceData?.note || sourceNote, target:rest, sourceEdge, sourceBeat:beat, restCenter, sourceData};
+      }
+    }
+  }
+  return null;
+}
+function ghostSplineLengthBeats(aBeat, bBeat){ return Math.abs(clampToBar(Number(aBeat)||0) - clampToBar(Number(bBeat)||0)); }
 function nearestPitchedFor(n, dir=1){
   if(!n) return null;
   const line = lineNotes(noteLine(n)).filter(m=>!isPolyrest(m));
@@ -1294,7 +1398,7 @@ function analogSketchAllowed(){
   }
   return true;
 }
-function timelineUsesLineLayout(){ return magneticOn() || !showGeneratedRests; }
+function timelineUsesLineLayout(){ return true; }
 function lineFromCanvasY(y){
   const layout = timelineLayout || {bandTop:56, magneticLineH:42, bandH:34};
   if(timelineUsesLineLayout()){
@@ -1787,6 +1891,7 @@ let hitRects = [];
 let timelineLayout = {bandTop:56, magneticLineH:42, bandH:34};
 let lastCanvasPoint = null;
 let showGeneratedRests = true;
+let hoveredHitId = null;
 function renderTimeline(){
   applyMagneticLayout();
   const p=params(); const segs=buildSegments(p);
@@ -1889,6 +1994,27 @@ function renderTimeline(){
     if(beats >= 1/16) return {color:'#47d7ac', label:'1/16', line:true};
     return {color:'#47d7ac', label:'dot', line:false};
   }
+  function polyrestVisualState(seg, prevNote=null){
+    const n = seg?.n;
+    if(!n) return 'ghost';
+    if(n.locked) return 'locked';
+    if(selId === n.id) return 'selected';
+    if(hoveredHitId === n.id) return 'hover';
+    if(prevNote && hoveredHitId === prevNote.id) return 'linked';
+    if(n.muteRest) return 'muted';
+    return 'ghost';
+  }
+  function polyrestVisualStyle(state, beats){
+    const styles = {
+      ghost:   {fill:'#47d7ac', alpha:0.18, stroke:'rgba(207,226,255,.38)', cap:'rgba(255,210,113,.58)', grad:true},
+      hover:   {fill:'#ffd271', alpha:0.55, stroke:'rgba(255,210,113,.96)', cap:'rgba(255,210,113,.78)', grad:true},
+      linked:  {fill:'#ffd271', alpha:0.40, stroke:'rgba(255,210,113,.92)', cap:'rgba(255,210,113,.70)', grad:true},
+      selected:{fill:'#f7fbff', alpha:0.30, stroke:'rgba(255,210,113,.92)', cap:'rgba(255,210,113,.82)', grad:true},
+      muted:   {fill:'#6b3748', alpha:0.22, stroke:'rgba(255,210,113,.60)', cap:'rgba(255,210,113,.42)', grad:false},
+      locked:  {fill:'#8b95a8', alpha:0.22, stroke:'rgba(255,255,255,.28)', cap:'rgba(255,255,255,.22)', grad:false},
+    };
+    return styles[state] || styles.ghost;
+  }
   function paceModeOn(){ return (shiftModeSel?.value || 'resize') === 'pace'; }
   function paceHandles(segs){
     if(!paceModeOn()) return [];
@@ -1965,18 +2091,100 @@ function renderTimeline(){
     });
     ctx.restore();
   }
+  function drawGhostVertexZone(line, anchors){
+    if(!anchors.length) return;
+    const y = bandTop + (line-1)*magneticLineH + Math.round(noteH/2) + 0.5;
+    const zone = ghostVertexZonePx();
+    const hitR = ghostHitRadiusPx();
+    const selection = selectionSplineVertexData();
+    ctx.save();
+    ctx.strokeStyle = 'rgba(71,215,172,.48)';
+    ctx.fillStyle = 'rgba(71,215,172,.08)';
+    ctx.setLineDash([3,3]);
+    anchors.forEach((n, i)=>{
+      const x = xOf(n.start + durationBeats(n)/2);
+      ctx.beginPath();
+      ctx.roundRect ? ctx.roundRect(x - zone, y - zone/2, zone*2, zone, 8) : ctx.rect(x - zone, y - zone/2, zone*2, zone);
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.strokeStyle = i === 0 ? 'rgba(247,251,255,.88)' : 'rgba(255,210,113,.82)';
+      ctx.lineWidth = 1.5;
+      ctx.arc(x, y, hitR, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(247,251,255,.92)';
+      ctx.font = `bold ${Math.max(8, 9*zY)}px ui-monospace,monospace`;
+      ctx.fillText(String(i + 1), x - 3, y - hitR - 4);
+      ctx.strokeStyle = 'rgba(71,215,172,.48)';
+    });
+    if(selection && selection.line === line && selection.note && !isPolyrest(selection.note)){
+      const beats = selection.vertexBeats || [selection.startBeat, selection.endBeat];
+      beats.forEach((beat, idx)=>{
+        const sx = xOf(beat);
+        ctx.beginPath();
+        ctx.fillStyle = idx === 0 ? 'rgba(247,251,255,.96)' : 'rgba(255,210,113,.96)';
+        ctx.strokeStyle = idx === 0 ? 'rgba(71,215,172,.95)' : 'rgba(164,28,255,.95)';
+        ctx.lineWidth = 1.5;
+        ctx.arc(sx, y, hitR + 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = idx === 0 ? 'rgba(71,215,172,.95)' : 'rgba(164,28,255,.95)';
+        ctx.font = `bold ${Math.max(8, 9*zY)}px ui-monospace,monospace`;
+        ctx.fillText(idx === 0 ? 'S' : 'E', sx - 3, y - hitR - 4);
+      });
+    }
+    ctx.fillStyle = 'rgba(71,215,172,.78)';
+    ctx.font = `bold ${Math.max(8, 10*zY)}px ui-monospace,monospace`;
+    ctx.fillText('vertex zone', xOf(anchors[0].start + durationBeats(anchors[0])/2) + 8, y + zone/2 + 10);
+    ctx.restore();
+  }
   function segDraw(s,y,h){
     const intOK = Math.abs(s.samples - Math.round(s.samples))<1e-9;
     const isPoly = s.type === 'polyrest';
     const col = s.type==='note' ? getNoteColor(s.idx, s.n.group) : (isPoly ? '#47d7ac' : (s.mute ? '#6b3748' : getComputedStyle(document.documentElement).getPropertyValue('--rest').trim()));
     const x1 = xOf(s.start)+1, x2 = xOf(s.end)-2, ww = Math.max(0, x2-x1);
-    if(isPoly && magneticOn()){
+    if(isPoly){
+      const prevNote = lineNotes(s.line || noteLine(s.n)).filter(n=>!isPolyrest(n) && n.start + durationBeats(n) <= s.start).slice(-1)[0] || null;
+      const state = polyrestVisualState(s, prevNote);
+      const style = polyrestVisualStyle(state, s.beats || durationBeats(s.n));
       const accent = restAccentStyle(s.beats || durationBeats(s.n));
-      const grad = ctx.createLinearGradient(x1, y + h/2, x2, y + h/2);
-      grad.addColorStop(0, accent.color);
-      grad.addColorStop(1, '#47d7ac');
-      ctx.fillStyle = grad;
+      if(style.grad){
+        const grad = ctx.createLinearGradient(x1, y + h/2, x2, y + h/2);
+        grad.addColorStop(0, style.cap);
+        grad.addColorStop(1, style.fill);
+        ctx.fillStyle = grad;
+      } else {
+        ctx.fillStyle = style.fill;
+      }
+      ctx.save();
+      ctx.globalAlpha = style.alpha;
       ctx.fillRect(x1, y, ww, h);
+      ctx.restore();
+      ctx.strokeStyle = style.stroke;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([5,4]);
+      ctx.strokeRect(x1+0.5, y+0.5, Math.max(0, x2-x1)-1, h-1);
+      ctx.setLineDash([]);
+      const centerX = xOf(polyrestVertexBeat(s.n));
+      const centerY = y + h / 2;
+      ctx.save();
+      ctx.fillStyle = 'rgba(247,251,255,.92)';
+      ctx.strokeStyle = 'rgba(164,28,255,.92)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, Math.max(4, 5*zY), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+      if(prevNote && hoveredHitId === prevNote.id){
+        ctx.save();
+        ctx.globalAlpha = 0.65;
+        ctx.strokeStyle = style.stroke;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4,3]);
+        ctx.strokeRect(x1+0.5, y+0.5, Math.max(0, x2-x1)-1, h-1);
+        ctx.restore();
+      }
     } else {
       ctx.fillStyle = col;
       if(s.type==='rest' && magneticOn()){
@@ -2100,17 +2308,6 @@ function renderTimeline(){
       }
       hitRects.push({x1, y1:y, x2:x1+ww, y2:y+h, type:'note', id:s.n.id});
     }
-    if(s.type==='polyrest'){
-      if(s.n.id===selId){
-        ctx.strokeStyle='#ffd271'; ctx.lineWidth=2; ctx.strokeRect(x1+0.5, y+0.5, Math.max(0, x2-x1)-1, h-1);
-      }
-      ctx.strokeStyle = 'rgba(207,226,255,.38)';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([5,4]);
-      ctx.strokeRect(x1+0.5, y+0.5, Math.max(0, x2-x1)-1, h-1);
-      ctx.setLineDash([]);
-      hitRects.push({x1, y1:y, x2:x1+ww, y2:y+h, type:'note', id:s.n.id});
-    }
     const name = (s.type==='note') ? (s.n.lbl && s.n.lbl.trim() ? `[${s.n.lbl.trim()}]` : `${s.n.note}${s.n.oct}`) : s.label;
     const glab = s.type==='note' && s.n.group ? ` • ${groupLabel(s.n.group)}` : '';
     const flags = (s.type==='note' ? `${s.n.locked?' 🔒':''}${s.n.q?' • Q':''}${s.n.spoiler?' • review':''}${s.n.restAfter>0?' • rest '+restAccentStyle(s.n.restAfter).label:''}` : '');
@@ -2207,7 +2404,44 @@ function renderTimeline(){
       ctx.fillText('L'+line, 8, y-10);
     }
   }
-  for(const s of segs){
+  const gLine = ghostLine();
+  if(gLine != null){
+    const anchors = dotAnchorsForLine(gLine);
+    if(anchors.length){
+      drawGhostVertexZone(gLine, anchors);
+      const y = bandTop + (gLine-1)*magneticLineH + Math.round(noteH/2) + 0.5;
+      const xs = anchors.map(n=>xOf(n.start + durationBeats(n)/2));
+      ctx.save();
+      ctx.strokeStyle = 'rgba(164,28,255,.82)';
+      ctx.lineWidth = Math.max(2, 2.25*zY);
+      ctx.shadowColor = 'rgba(164,28,255,.26)';
+      ctx.shadowBlur = 8;
+      ctx.setLineDash([7,5]);
+      ctx.beginPath();
+      ctx.moveTo(xs[0], y);
+      for(let i=1;i<xs.length;i++) ctx.lineTo(xs[i], y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.shadowBlur = 0;
+      xs.forEach((x, i)=>{
+        ctx.fillStyle = i===0 ? 'rgba(247,251,255,.96)' : 'rgba(255,210,113,.92)';
+        ctx.strokeStyle = 'rgba(164,28,255,.92)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(x, y, Math.max(4, 5*zY), 0, Math.PI*2);
+        ctx.fill(); ctx.stroke();
+      });
+      ctx.fillStyle = 'rgba(164,28,255,.85)';
+      ctx.font = `bold ${Math.max(8, 10*zY)}px ui-monospace,monospace`;
+      ctx.fillText(`ghost line L${gLine}`, xs[0] + 8, y - 8);
+      ctx.restore();
+    }
+  }
+  const orderedSegs = [
+    ...segs.filter(s=>s.type==='polyrest'),
+    ...segs.filter(s=>s.type!=='polyrest')
+  ];
+  for(const s of orderedSegs){
     const h = (s.type==='note'?noteH:restH);
     const y = lineLayout
       ? bandTop + ((s.line||1)-1)*magneticLineH + (s.type==='note'?0:Math.round((noteH-restH)/2))
@@ -3082,11 +3316,10 @@ function startPhraseShiftDrag(n, x, before){
   return startNoteShiftDrag(n, x, before);
 }
 function startPhraseRestStretchDrag(n, x, before, edge){
-  if(isPolyrest(n)) return false;
   const side = edge === 'left' ? 'prev' : 'next';
-  const rest = ensurePhraseBoundaryPolyrest(n, side);
+  const rest = isPolyrest(n) ? n : ensurePhraseBoundaryPolyrest(n, side);
   if(!rest){ toast('No existing polyrest to stretch. Add a note/rest first.'); return false; }
-  drag.active=true; drag.id=n.id; drag.restId=rest.id; drag.mode='rest-stretch'; drag.edge=side; drag.line=noteLine(n); drag.startLen=durationBeats(rest); drag.downBeat=xToBeat(x); drag.downX=x; drag.before=before;
+  drag.active=true; drag.id=n.id; drag.restId=rest.id; drag.mode='rest-stretch'; drag.edge=side; drag.line=noteLine(n); drag.startLen=durationBeats(rest); drag.startBeat=rest.start; drag.startEnd=rest.start + durationBeats(rest); drag.downBeat=xToBeat(x); drag.downX=x; drag.before=before;
   cv.classList.add('grabbing');
   toast(side === 'prev' ? 'Stretch series start rest' : 'Stretch series end rest');
   return true;
@@ -3181,7 +3414,17 @@ cv.addEventListener('mousemove', (e)=>{
     } else if(drag.mode === 'rest-stretch'){
       const rest = notes.find(nn=>nn.id===drag.restId);
       if(!rest) return;
-      rest.lenOverride = Math.max(1/64, editSnap(drag.startLen + delta));
+      const minLen = 1/64;
+      if(drag.edge === 'prev'){
+        const lineNotesNoRests = lineNotes(drag.line).filter(nn=>!isPolyrest(nn) && nn.id !== rest.id);
+        const prev = [...lineNotesNoRests].filter(nn=>nn.start + durationBeats(nn) <= drag.startBeat).pop() || null;
+        const minStart = prev ? prev.start + durationBeats(prev) : 0;
+        const nextStart = Math.min(drag.startEnd - minLen, editSnap(drag.startBeat + delta));
+        rest.start = clampEditBeat(Math.max(minStart, nextStart));
+        rest.lenOverride = Math.max(minLen, editSnap(drag.startEnd - rest.start));
+      } else {
+        rest.lenOverride = Math.max(minLen, editSnap(drag.startLen + delta));
+      }
     } else if(drag.mode === 'note-shift'){
       const prev = notes.find(nn=>nn.id===drag.prevId);
       const minLen = 1/64;
@@ -3251,6 +3494,22 @@ cv.addEventListener('mousemove', (e)=>{
     } else {
       n.start = clampEditBeat(drag.startBeat + delta);
     }
+    if(n){
+      if(isPolyrest(n)) syncPolyrestVertex(n);
+      const touchSignal = polyrestTouchSignal(n, rect.width);
+      if(touchSignal){
+        const target = touchSignal.target || n;
+        removePolyrestPreservingSpace(target);
+        drag.active = false;
+        cv.classList.remove('grabbing');
+        commitHistory(drag.before, `Polyrest ${touchSignal.kind}`);
+        renderNotes(); update();
+        toast(touchSignal.kind === 'self-edge'
+          ? 'Polyrest edge touched and was removed'
+          : `Polyrest touched ${pitchName(touchSignal.source)} and was removed`);
+        return;
+      }
+    }
     if(magneticOn()){
       applyMagneticLayout();
       pinResizeOppositeHandle(drag, n);
@@ -3262,6 +3521,9 @@ cv.addEventListener('mousemove', (e)=>{
   // tooltip
   const pitchHit = hitPitchAt(x, y);
   const hit = hitNoteAt(x, y);
+  const prevHovered = hoveredHitId;
+  hoveredHitId = hit?.id || null;
+  if(prevHovered !== hoveredHitId && !drag.active){ renderTimeline(); }
   let resizeEdge = 'right';
   if(armedTool){
     cv.style.cursor = 'crosshair';
@@ -3277,11 +3539,6 @@ cv.addEventListener('mousemove', (e)=>{
   if(hitSelected && hit && magneticOn() && shiftMode !== 'line' && !freqMode){
     const mid = (hit.x1 + hit.x2) / 2;
     resizeEdge = x < mid ? 'left' : 'right';
-    if(resizeEdge === 'right'){
-      const hn = notes.find(nn=>nn.id===hit.id);
-      const nb = hn ? lineNeighborInfo(hn) : {next:null};
-      endHandleLocked = !!(nb.next && !isPolyrest(nb.next));
-    }
   }
   if(hitSelected && hit && !freqMode && !magneticOn()){
     const mid = (hit.x1 + hit.x2) / 2;
@@ -3391,6 +3648,18 @@ cv.addEventListener('mousedown', (e)=>{
   }
   if(magneticOn()){
     if(shiftMode === 'line' && isEdgeHandleHit(hit, x)){
+      if(isEndHandleHit(hit, x)){
+        const beforeRight = captureState();
+        drag.active=true; drag.id=n.id; drag.mode='resize'; drag.edge='free-right'; drag.line=noteLine(n); drag.startBeat=n.start; drag.startLen=durationBeats(n); drag.anchorStart=n.start; drag.anchorEnd=n.start + durationBeats(n); drag.downBeat=xToBeat(x); drag.downX=x; drag.before=beforeRight;
+        cv.classList.add('grabbing');
+        toast('Drag resizes end');
+        return;
+      }
+      const edge = isStartHandleHit(hit, x) ? 'left' : 'right';
+      if(startPhraseRestStretchDrag(n, x, before, edge)) return;
+      return;
+    }
+    if(isPolyrest(n) && shiftMode === 'resize' && isEdgeHandleHit(hit, x)){
       const edge = isStartHandleHit(hit, x) ? 'left' : 'right';
       if(startPhraseRestStretchDrag(n, x, before, edge)) return;
       return;
@@ -3413,7 +3682,7 @@ cv.addEventListener('mousedown', (e)=>{
       renderTimeline();
     }
     if(mode === 'resize' && edge === 'left'){
-      const nb = lineNeighborInfo(n);
+      const nb = lineSolidNeighborInfo(n);
       if(nb.prev){
         if(nb.prev.locked){ toast('Previous event is locked.'); return; }
         edge = 'left-boundary';
@@ -3421,15 +3690,13 @@ cv.addEventListener('mousedown', (e)=>{
         edge = 'left-start';
       }
     }
-    const nb = lineNeighborInfo(n);
+    const nb = lineSolidNeighborInfo(n);
     if(mode === 'resize' && edge === 'right'){
-      if(nb.next && !isPolyrest(nb.next)){ toast('Next note protected: use the start handle to eat previous time.'); return; }
-      if(nb.next && nb.next.locked){ toast('Next polyrest is locked.'); return; }
-      if(nb.next) edge = 'right-boundary';
+      edge = 'free-right';
     }
     const startLen = durationBeats(resizeTarget);
-    drag.active=true; drag.id=resizeTarget.id; drag.prevId=edge==='left-boundary' ? nb.prev?.id : null; drag.nextId=edge==='right-boundary' ? nb.next?.id : null; drag.mode=mode; drag.edge=edge; drag.line=noteLine(resizeTarget); drag.startBeat=resizeTarget.start; drag.startLen=startLen; drag.startPrevLen=edge==='left-boundary' && nb.prev ? durationBeats(nb.prev) : 0; drag.startNextLen=edge==='right-boundary' && nb.next ? durationBeats(nb.next) : 0; drag.startOffset=lineOffset(noteLine(resizeTarget)); drag.startMidi=0; drag.anchorStart=resizeTarget.start; drag.anchorEnd=resizeTarget.start + startLen; drag.downBeat=xToBeat(x); drag.downX=x; drag.before=before;
-    toast(mode==='line' ? `Drag shifts line ${noteLine(n)}` : (edge==='left-boundary'?'Drag moves start boundary':(edge==='right-boundary'?'Drag eats next boundary':(edge==='left-start'?'Drag resizes from line start':`Drag resizes ${resizeTarget.id===n.id?'selected':'previous'} note`))));
+    drag.active=true; drag.id=resizeTarget.id; drag.prevId=edge==='left-boundary' ? nb.prev?.id : null; drag.nextId=null; drag.mode=mode; drag.edge=edge; drag.line=noteLine(resizeTarget); drag.startBeat=resizeTarget.start; drag.startLen=startLen; drag.startPrevLen=edge==='left-boundary' && nb.prev ? durationBeats(nb.prev) : 0; drag.startNextLen=0; drag.startOffset=lineOffset(noteLine(resizeTarget)); drag.startMidi=0; drag.anchorStart=resizeTarget.start; drag.anchorEnd=resizeTarget.start + startLen; drag.downBeat=xToBeat(x); drag.downX=x; drag.before=before;
+    toast(mode==='line' ? `Drag shifts line ${noteLine(n)}` : (edge==='left-boundary'?'Drag moves start boundary':(edge==='left-start'?'Drag resizes from line start':`Drag resizes ${resizeTarget.id===n.id?'selected':'previous'} note`)));
   } else {
     if(shiftMode === 'resize' || shiftMode === 'pace'){
       const mid = (hit.x1 + hit.x2) / 2;
@@ -3614,7 +3881,7 @@ const PROJECT_LATEST_KEY = 'resketchpad_project_latest_work_v1';
 let autosaveTimer = null;
 let autosaveReady = false;
 function projectSnapshot(){
-  return {version:"rhytime-rsp-0.1", beatsPerBar:parseInt(beatsPerBarSel.value,10), bars:barsCount(), base:baseSel.value, tempoMode:tempoModeSel?.value || 'native', tempoBPM:customTempoBPM(), nativeTempoBPM:nativeTempoBPM(), midiSourceTempoBPM, groups, notes, lineOffsets, paceRef, pacePivotIds, synthPatch:synthCodeSnapshot()};
+  return {version:"rhytime-rsp-0.1", beatsPerBar:parseInt(beatsPerBarSel.value,10), bars:barsCount(), base:baseSel.value, tempoMode:tempoModeSel?.value || 'native', tempoBPM:customTempoBPM(), nativeTempoBPM:nativeTempoBPM(), midiSourceTempoBPM, midiChannel:el('midiChannel')?.value || 'all', showGeneratedRests, groups, notes, lineOffsets, paceRef, pacePivotIds, synthPatch:synthCodeSnapshot()};
 }
 function toJSON(){
   return JSON.stringify(projectSnapshot(), null, 2);
@@ -3685,6 +3952,7 @@ function resetProjectState(){
   lineOffsets = {};
   paceRef = null;
   pacePivotIds = [];
+  ghostLineRef = null;
   harmonyPaletteIds = [];
   selId = null;
   nextId = 1;
@@ -3692,9 +3960,12 @@ function resetProjectState(){
   showAllNotes = false;
   showAllIntegers = false;
   showGeneratedRests = true;
+  if(el('midiChannel')) el('midiChannel').value = 'all';
+  const freeEdit = el('freeEditMode'); if(freeEdit) freeEdit.checked = true;
   const mag = el('magneticMelody'); if(mag) mag.checked = true;
   if(el('editFeel')) el('editFeel').value = 'analog';
   if(shiftModeSel) shiftModeSel.value = 'resize';
+  syncFreeEditMode();
   renderGroups();
   setCurrentGroup(groups[0]?.code || '');
   renderNotes();
@@ -3719,11 +3990,14 @@ function fromJSON(obj){
   if(nativeTempoBPMInp) nativeTempoBPMInp.value = String(nativeBpm);
   if(tempoModeSel) tempoModeSel.value = ['native','custom','source'].includes(obj.tempoMode) ? obj.tempoMode : 'native';
   if(tempoBPMInp) tempoBPMInp.value = String(Math.max(20, Math.min(320, Number(obj.tempoBPM)||nativeBpm||60)));
+  if(el('midiChannel')) el('midiChannel').value = ['all','0','1','2','3','4','5','6','7','8','9','10','11','12','13','14','15'].includes(String(obj.midiChannel)) ? String(obj.midiChannel) : 'all';
+  showGeneratedRests = obj.showGeneratedRests !== false;
   groups = Array.isArray(obj.groups)? obj.groups : [];
   notes = Array.isArray(obj.notes)? obj.notes.map(n=>normalizeNote({...n})) : [];
   lineOffsets = obj.lineOffsets && typeof obj.lineOffsets==='object' ? {...obj.lineOffsets} : {};
   paceRef = obj.paceRef && typeof obj.paceRef==='object' ? {...obj.paceRef} : null;
   pacePivotIds = Array.isArray(obj.pacePivotIds) ? obj.pacePivotIds.filter(id=>Number.isFinite(Number(id))).map(Number).slice(0,10) : [];
+  ghostLineRef = Number.isFinite(Number(obj.ghostLineRef)) ? Math.max(1, Math.min(MAX_LINES, parseInt(obj.ghostLineRef,10) || 1)) : null;
   if(obj.synthPatch && typeof obj.synthPatch === 'object') applySynthPatch(obj.synthPatch, '');
   nextId = notes.reduce((m,n)=>Math.max(m,n.id||0),0)+1;
   renderGroups(); renderNotes(); update();
@@ -3744,8 +4018,8 @@ el('fileJSON').addEventListener('change', async (e)=>{
 });
 
 function toCSV(){
-  const header = 'start,den,dot,note,oct,cents,label,group,restAfter,muteRest,line,lenOverride,familyRole,kind\n';
-  const rows = notes.map(n=>[n.start, n.den, n.dot?1:0, n.note, n.oct, n.cents, JSON.stringify(n.lbl||''), n.group||'', n.restAfter||0, n.muteRest?1:0, noteLine(n), n.lenOverride||'', n.familyRole||'', n.kind||'note'].join(','));
+  const header = 'start,den,dot,note,oct,cents,label,group,restAfter,muteRest,line,lenOverride,familyRole,kind,vertexBeat,vertexId,vertexWeight\n';
+  const rows = notes.map(n=>[n.start, n.den, n.dot?1:0, n.note, n.oct, n.cents, JSON.stringify(n.lbl||''), n.group||'', n.restAfter||0, n.muteRest?1:0, noteLine(n), n.lenOverride||'', n.familyRole||'', n.kind||'note', n.kind==='polyrest' ? (Number.isFinite(Number(n.vertexBeat)) ? n.vertexBeat : '') : '', n.kind==='polyrest' ? (n.vertexId || `polyrest:${n.id}`) : '', n.kind==='polyrest' ? (Number.isFinite(Number(n.vertexWeight)) ? n.vertexWeight : 0.5) : ''].join(','));
   return header + rows.join('\n');
 }
 function fromCSV(text){
@@ -3773,6 +4047,9 @@ function fromCSV(text){
       lenOverride: parseFloat(parts[11])||null,
       familyRole: parts[12]||'',
       kind: parts[13]==='polyrest' ? 'polyrest' : 'note',
+      vertexBeat: Number.isFinite(Number(parts[14])) ? Number(parts[14]) : null,
+      vertexId: parts[15]||'',
+      vertexWeight: Number.isFinite(Number(parts[16])) ? Math.max(0, Math.min(1, Number(parts[16]))) : null,
       locked:false, q:false
     };
     out.push(normalizeNote(n));
@@ -4010,7 +4287,7 @@ function checkWires(){
     'beatsPerBar','barsCount','base','tempoBPM','nativeTempoBPM','tempoMode','playFromSelected','lblLenDec','lblLenInc','stackCycle','stackIncRests','stackStartDesc','tlVoiceCount','fitVoices','tlZoomMode','tlZoom','tlZoomInfo','singerMode','tonicSel','currentGroup','groupApplyMode','currentGroupColor','currentGroupName','toggleGroups',
     'undoBtn','redoBtn',
     'btnNewSong','btnSaveJSON','btnLoadJSON','btnClearMemory','btnReloadLatest','btnSaveCSV','btnLoadCSV','btnLoadMIDI','btnSaveMIDI','midiChannel','fileMIDI','previewVoice','synthPresetSelect','synthPresetName','saveSynthPreset','renameSynthPreset','deleteSynthPreset','toggleSynthLab','synthLab','synthCutoff','synthCutoffInfo','synthLfoRate','synthLfoRateInfo','synthLfoDepth','synthLfoDepthInfo','synthLfoShape','synthReleaseShape','synthAttack','synthAttackInfo','synthDecay','synthDecayInfo','synthSustain','synthSustainInfo','synthContinuity','synthContinuityInfo','synthRelease','synthReleaseInfo','synthForm1','synthForm2','synthForm2Blend','synthForm2BlendInfo','synthForm2Ratio','synthForm2RatioInfo','synthForm2Detune','synthForm2DetuneInfo','synthLevel','synthLevelInfo','synthBodyMix','synthBodyMixInfo','synthColorMix','synthColorMixInfo','synthToneQ','synthToneQInfo','synthReverbRoom','synthReverbRoomInfo','synthReverbWet','synthReverbWetInfo','synthReverbDamp','synthReverbDampInfo','synthCodeLog','applySynthCode','testSoundBtn','playBtn','stopBtn','addGroup','cv','tlResizer','tlViewAll','tlZoomModeToggle','addNoteBefore','addNoteAfter','addDistantNote','addPolyrest','relativeInterval','addStringAbove','addStringBelow','dupNote','delNote','solvePaceRef','toggleNotesList',
-    'tapRestVal','tapRestPrev','tapRestNext','magneticMelody','shiftMode','editFeel','moveMinus','movePlus','solveNearestRest','clearSpoilers','harmClear','harmPalette','harmTargetNote','harmTargetOct','harmTargetRole','harmRandomize','harmResult','notesList','toggleIntegerList','integerListInfo','tbl','groupCursor'
+    'tapRestVal','tapRestPrev','tapRestNext','freeEditMode','magneticMelody','shiftMode','editFeel','moveMinus','movePlus','solveNearestRest','clearSpoilers','harmClear','harmPalette','harmTargetNote','harmTargetOct','harmTargetRole','harmRandomize','harmResult','notesList','toggleIntegerList','integerListInfo','tbl','groupCursor'
   ];
   let ok = true; let miss = [];
   ids.forEach(id=>{ if(!document.getElementById(id)){ ok=false; miss.push(id);} });
@@ -4034,6 +4311,7 @@ function attach(){
     tempoModeSel?.addEventListener(ev, update);
   });
   el('magneticMelody').addEventListener('change', ()=>{ renderNotes(); update(); toast(magneticOn()?'Magnetic melody ON':'Magnetic melody OFF'); });
+  el('freeEditMode').addEventListener('change', ()=>{ syncFreeEditMode(); renderNotes(); update(); toast(magneticOn()?'Magnetic melody ON':'Free edit ON'); });
   el('editFeel').addEventListener('change', ()=>{ renderNotes(); update(); toast(el('editFeel').value==='frac32'?'Edit feel: 1/32 steps':'Edit feel: analog'); });
   window.addEventListener('resize', ()=>renderTimeline());
 
@@ -4046,6 +4324,8 @@ function attach(){
   buildTonicOptions();
   buildHarmonyTargetOptions();
   if(el('magneticMelody')) el('magneticMelody').checked = true;
+  if(el('freeEditMode')) el('freeEditMode').checked = true;
+  syncFreeEditMode();
   renderSynthPresetOptions('Default bell room');
   applySynthPatch(DEFAULT_SYNTH_PATCH, '');
   setSynthLabOpen(localStorage.getItem('resketchpad_synth_lab_open') === '1');
